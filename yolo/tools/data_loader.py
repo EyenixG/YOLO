@@ -137,31 +137,47 @@ class YoloDataset(Dataset):
         return data
 
     def load_valid_labels(self, label_path: str, seg_data_one_img: list) -> Union[Tensor, None]:
-        """
-        Loads valid COCO style segmentation data (values between [0, 1]) and converts it to bounding box coordinates
-        by finding the minimum and maximum x and y values.
-
-        Parameters:
-            label_path (str): The filepath to the label file containing annotation data.
-            seg_data_one_img (list): The actual list of annotations (in segmentation format)
-
-        Returns:
-            Tensor or None: A tensor of all valid bounding boxes if any are found; otherwise, None.
-        """
         bboxes = []
+
         for seg_data in seg_data_one_img:
             cls = seg_data[0]
-            points = np.array(seg_data[1:]).reshape(-1, 2).clip(0, 1)
-            valid_points = points[(points >= 0) & (points <= 1)].reshape(-1, 2)
-            if valid_points.size > 1:
-                bbox = torch.tensor([cls, *valid_points.min(axis=0), *valid_points.max(axis=0)])
+
+            # YOLO Detection: class x_center y_center width height
+            if len(seg_data) == 5:
+                _, xc, yc, w, h = seg_data
+
+                if not (0 <= xc <= 1 and 0 <= yc <= 1 and 0 < w <= 1 and 0 < h <= 1):
+                    continue
+
+                x1 = max(0.0, xc - w / 2)
+                y1 = max(0.0, yc - h / 2)
+                x2 = min(1.0, xc + w / 2)
+                y2 = min(1.0, yc + h / 2)
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                bbox = torch.tensor([cls, x1, y1, x2, y2], dtype=torch.float32)
                 bboxes.append(bbox)
+
+            # YOLO Segmentation: class x1 y1 x2 y2 ...
+            else:
+                points = np.array(seg_data[1:]).reshape(-1, 2).clip(0, 1)
+
+                valid_points = points[(points >= 0) & (points <= 1)].reshape(-1, 2)
+
+                if valid_points.size > 1:
+                    bbox = torch.tensor(
+                        [cls, *valid_points.min(axis=0), *valid_points.max(axis=0)],
+                        dtype=torch.float32,
+                    )
+                    bboxes.append(bbox)
 
         if bboxes:
             return torch.stack(bboxes)
-        else:
-            logger.warning(f"No valid BBox in {label_path}")
-            return torch.zeros((0, 5))
+
+        # logger.warning(f"No valid BBox in {label_path}")
+        return torch.zeros((0, 5))
 
     def get_data(self, idx):
         img_path, bboxes = self.img_paths[idx], self.bboxes[idx]
